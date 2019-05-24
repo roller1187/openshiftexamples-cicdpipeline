@@ -15,6 +15,8 @@ spec:
 
         def TEMPLATEPATH = 'https://raw.githubusercontent.com/openshift/nodejs-ex/master/openshift/templates/nodejs-mongodb.json'
         def TEMPLATENAME = 'nodejs-mongodb-example'
+        def SKIPSTAGE = false
+        def SKIPPROD = false
 
         // NOTE, the "pipeline" directive/closure from the declarative pipeline syntax needs to include, or be nested outside,
         // and "openshift" directive/closure from the OpenShift Client Plugin for Jenkins.  Otherwise, the declarative pipeline engine
@@ -113,21 +115,26 @@ spec:
                     steps {
                         script {
                             openshift.withCluster() {
-                                openshift.withProject("pipeline-app") {                            
-                                    userInput = input(
-                                        id: 'Proceed1', message: 'Is this ready to send to QA?', parameters: [
-                                        [$class: 'BooleanParameterDefinition', defaultValue: true, description: '', name: 'Please confirm you want to send to staging']
-                                    ])
-                                    echo "Autotagging this new image for a staging rollout: ${TEMPLATENAME}-staging:latest"
-                                    // if everything else succeeded, tag the ${TEMPLATENAME}:latest image as ${TEMPLATENAME}-staging:latest
-                                    // a pipeline build config for the staging environment can watch for the ${TEMPLATENAME}-staging:latest
-                                    // image to change and then deploy it to the staging environment
-                                    openshift.tag("${TEMPLATENAME}:latest", "${TEMPLATENAME}-staging:latest")
-                                }
-                                openshift.withProject("pipeline-app-staging") {
-                                    echo "deploying new-app to staging from -latest tag"
-                                    // the image change tag should take care of rolling out updates
-                                    // creating stage project happens in the next
+                                try {
+                                    openshift.withProject("pipeline-app") {                            
+                                        userInput = input(
+                                            id: 'Proceed1', message: 'Is this ready to send to QA?', parameters: [
+                                            [$class: 'BooleanParameterDefinition', defaultValue: true, description: '', name: 'Please confirm you want to send to staging']
+                                        ])
+                                        echo "Autotagging this new image for a staging rollout: ${TEMPLATENAME}-staging:latest"
+                                        // if everything else succeeded, tag the ${TEMPLATENAME}:latest image as ${TEMPLATENAME}-staging:latest
+                                        // a pipeline build config for the staging environment can watch for the ${TEMPLATENAME}-staging:latest
+                                        // image to change and then deploy it to the staging environment
+                                        openshift.tag("${TEMPLATENAME}:latest", "${TEMPLATENAME}-staging:latest")
+                                    }
+                                    openshift.withProject("pipeline-app-staging") {
+                                        echo "deploying new-app to staging from -latest tag"
+                                        // the image change tag should take care of rolling out updates
+                                        // creating stage project happens in the next
+                                    }
+                                } catch(err) { // input false
+                                    SKIPSTAGE = true
+                                    echo "Staging deployment skipped"
                                 }
                             }
                         } // script
@@ -138,7 +145,7 @@ spec:
                         expression {
                             openshift.withCluster() {
                                 openshift.withProject("pipeline-app-staging") {
-                                    return !openshift.selector('dc', "${TEMPLATENAME}-staging").exists()
+                                    return (!openshift.selector('dc', "${TEMPLATENAME}-staging").exists() && !SKIPSTAGE)
                                 }
                             }
                         }
@@ -152,6 +159,60 @@ spec:
                                     // otherwise the image change tag will take care of rolling out updates
                                     openshift.newApp("openshift/mongodb-persistent")
                                     openshift.newApp("pipeline-app/${TEMPLATENAME}-staging:latest").narrow('svc').expose()
+                                    // TODO hook up secrets
+                                }
+                            }
+                        } // script
+                    } // steps
+                } // stage
+                stage('prodit') {
+                    steps {
+                        script {
+                            openshift.withCluster() {
+                                try {
+                                    openshift.withProject("pipeline-app") {
+                                        userInput = input(
+                                            id: 'Proceed1', message: 'Is this ready to send to PROD?', parameters: [
+                                            [$class: 'BooleanParameterDefinition', defaultValue: true, description: '', name: 'Please confirm you want to send to prod']
+                                        ])
+                                        echo "Autotagging this new image for a prod rollout: ${TEMPLATENAME}-prod:latest"
+                                        // if everything else succeeded, tag the ${TEMPLATENAME}:latest image as ${TEMPLATENAME}-prod:latest
+                                        // a pipeline build config for the prod environment can watch for the ${TEMPLATENAME}-prod:latest
+                                        // image to change and then deploy it to the prod environment
+                                        openshift.tag("${TEMPLATENAME}:latest", "${TEMPLATENAME}-prod:latest")
+                                    }
+                                    openshift.withProject("pipeline-app-prod") {
+                                        echo "deploying new-app to prod from -latest tag"
+                                        // the image change tag should take care of rolling out updates
+                                        // creating stage project happens in the next
+                                    }
+                                } catch(err) { // input false
+                                    SKIPPROD = true
+                                    echo "Prod deployment skipped"
+                                }
+                            }
+                        } // script
+                    } // steps
+                } // stage
+                stage('create prod') {
+                    when {
+                        expression {
+                            openshift.withCluster() {
+                                openshift.withProject("pipeline-app-prod") {
+                                    return (!openshift.selector('dc', "${TEMPLATENAME}-prod").exists() && !SKIPPROD)
+                                }
+                            }
+                        }
+                    } // when
+                    steps {
+                        script {
+                            openshift.withCluster() {
+                                openshift.withProject("pipeline-app-prod") {
+                                    echo "Prod doesn't exsit - creating..."
+                                    // create the app only when dc doesn't already exist
+                                    // otherwise the image change tag will take care of rolling out updates
+                                    openshift.newApp("openshift/mongodb-persistent")
+                                    openshift.newApp("pipeline-app/${TEMPLATENAME}-prod:latest").narrow('svc').expose()
                                     // TODO hook up secrets
                                 }
                             }
